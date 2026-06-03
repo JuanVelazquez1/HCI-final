@@ -1,0 +1,18 @@
+Run following commands:
+
+py -3.12 -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+streamlit run app.py
+
+
+Get OLLama Cloud API KEY:
+
+https://ollama.com/settings/keys
+
+Create .env file with contents:
+OLLAMA_API_KEY=[YOUR_API_KEY][YOUR_API_KEY][YOUR_API_KEY]
+
+Get Open Food Facts database:
+
+https://static.openfoodfacts.org/data/en.openfoodfacts.org.products.csv.gz?utm_source=copilot.com
