@@ -1,3 +1,6 @@
+# ABOUTME: Main entry point for the XAI Food Recommender Streamlit app.
+# ABOUTME: Handles product search, scoring, feature-attribution XAI charts, and Ollama chatbot.
+
 import streamlit as st
 import duckdb
 import pandas as pd
@@ -9,11 +12,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 🔧 HARDCODED CONFIGURATION
+# CONFIGURATION
+# Dataset: Open Food Facts full English CSV export (en.openfoodfacts.org.products.csv.gz)
+# Source:  https://world.openfoodfacts.org/data
 # ──────────────────────────────────────────────────────────────────────────────
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
-OLLAMA_MODEL = "gpt-oss:120b"  # 🤖 Cloud model
-CSV_PATH = "en.openfoodfacts.org.products.csv.gz"  # 📁 Ensure this file exists
+OLLAMA_MODEL = "gpt-oss:120b"  # Cloud model via Ollama API
+CSV_PATH = "en.openfoodfacts.org.products.csv.gz"  # Full OFF English dataset
 
 client = Client(
     host="https://ollama.com",
@@ -21,56 +26,272 @@ client = Client(
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 1. APP CONFIGURATION & LAYOUT
+# APP CONFIGURATION & LAYOUT
 # ──────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Local XAI Food Recommender", layout="wide")
+st.set_page_config(
+    page_title="XAI Food Recommender",
+    page_icon="🌱",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# Custom CSS for Nutri-Score badges, confidence badges, and card polish
+st.markdown("""
+<style>
+.nutri-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-weight: bold;
+    font-size: 0.85em;
+    color: white;
+    margin-bottom: 4px;
+}
+.nutri-a { background-color: #038141; }
+.nutri-b { background-color: #85bb2f; }
+.nutri-c { background-color: #fecb02; color: #333; }
+.nutri-d { background-color: #ee8100; }
+.nutri-e { background-color: #e63e11; }
+.nutri-n { background-color: #aaaaaa; }
+
+.confidence-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.8em;
+    font-weight: 600;
+    margin-left: 6px;
+}
+.conf-high   { background-color: #d4edda; color: #155724; }
+.conf-medium { background-color: #fff3cd; color: #856404; }
+.conf-low    { background-color: #f8d7da; color: #721c24; }
+
+.nova-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.78em;
+    font-weight: 600;
+    background-color: #e8f4fd;
+    color: #1a6a9c;
+    margin-left: 4px;
+}
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🌱 Transparent Multi-Objective Food Recommendations")
-st.caption("Powered by Local Open Food Facts CSV (DuckDB) & Ollama Cloud XAI")
+st.caption("Powered by Open Food Facts (DuckDB) · Explainable AI via Ollama · Navigate using the sidebar ←")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# 2. SIDEBAR: CONFIGURATION & DATA PATH
+# SIDEBAR: SEARCH & FILTERS
 # ──────────────────────────────────────────────────────────────────────────────
 with st.sidebar:
-    # st.header("⚙️ Configuration")
-    # api_key_set = bool(os.environ.get("OLLAMA_API_KEY"))
-    # st.info(f"🔑 Ollama API Key: {'✅ Set via env' if api_key_set else '❌ OLLAMA_API_KEY not set'}")
-    # st.info(f"🤖 Model: `{OLLAMA_MODEL}`")
-    
-    # st.divider()
     st.header("🔍 Search & Filters")
-    search_query = st.text_input("Product Name", "Milk")
-    
+    search_query = st.text_input(
+        "Product Name",
+        "Milk",
+        help="Type any food product name. The search is case-insensitive and matches partial names.",
+    )
+
     st.divider()
     st.header("🥗 Nutritional Filters")
-    # Minimum thresholds (Good stuff)
-    min_protein = st.number_input("Min Protein (g/100g)", 0.0)
-    min_fiber = st.number_input("Min Fiber (g/100g)", 0.0)
-    
+    min_protein = st.number_input(
+        "Min Protein (g/100g)", 0.0,
+        help="Only show products with at least this much protein per 100 g. Protein is a positive health driver.",
+    )
+    min_fiber = st.number_input(
+        "Min Fiber (g/100g)", 0.0,
+        help="Only show products with at least this much dietary fiber per 100 g.",
+    )
+
     st.divider()
-    st.header("🚫 Max Limits (Bad stuff)")
-    # Maximum thresholds (Bad stuff)
-    max_sodium = st.number_input("Max Sodium (mg/100g)", 500.0)
-    max_sugars = st.number_input("Max Sugars (g/100g)", 20.0)
-    max_sat_fat = st.number_input("Max Saturated Fat (g/100g)", 3.0)
-    max_fat = st.number_input("Max Total Fat (g/100g)", 10.0)
-    max_carbs = st.number_input("Max Carbohydrates (g/100g)", 30.0)
-    max_energy = st.number_input("Max Energy (kcal/100g)", 200.0)
-    
+    st.header("🚫 Max Limits")
+    max_sodium = st.number_input(
+        "Max Sodium (mg/100g)", 500.0,
+        help="Exclude products with more sodium than this. High sodium is associated with cardiovascular risk.",
+    )
+    max_sugars = st.number_input(
+        "Max Sugars (g/100g)", 20.0,
+        help="Exclude products with more total sugars than this.",
+    )
+    max_sat_fat = st.number_input(
+        "Max Saturated Fat (g/100g)", 3.0,
+        help="Exclude products with more saturated fat than this. Saturated fat carries a heavier health penalty.",
+    )
+    max_fat = st.number_input(
+        "Max Total Fat (g/100g)", 10.0,
+        help="Exclude products with more total fat than this.",
+    )
+    max_carbs = st.number_input(
+        "Max Carbohydrates (g/100g)", 30.0,
+        help="Exclude products with more carbohydrates than this.",
+    )
+    max_energy = st.number_input(
+        "Max Energy (kcal/100g)", 200.0,
+        help="Exclude products with more energy density than this (kcal per 100 g).",
+    )
+
     st.divider()
     st.header("📊 Personalization Weights")
-    health_weight = st.slider("Health Priority", 0, 100, 50, key="hw")
-    eco_weight = st.slider("Eco Priority", 0, 100, 50, key="ew")
+    st.caption("Adjust how much Health vs. Eco impacts the ranking.")
+    health_weight = st.slider(
+        "Health Priority", 0, 100, 50, key="hw",
+        help="Higher = products are ranked more by their Health Score.",
+    )
+    eco_weight = st.slider(
+        "Eco Priority", 0, 100, 50, key="ew",
+        help="Higher = products are ranked more by their Eco Score.",
+    )
+
+    st.divider()
+    st.caption("📖 [How It Works](/How_It_Works)  |  ❓ [Help & FAQ](/Help)")
+
 
 # ──────────────────────────────────────────────────────────────────────────────
+# HELPER: CONFIDENCE SCORE
+# Counts how many key data fields are populated to gauge data completeness.
+# ──────────────────────────────────────────────────────────────────────────────
+def compute_confidence(row):
+    """Return (label, css_class, pct) based on how many key fields are non-zero/non-null."""
+    fields = [
+        row.get('nutriscore_grade') not in (None, 'n', '', 'N/A'),
+        row.get('environmental_score_grade') not in (None, 'n', '', 'N/A'),
+        pd.notna(row.get('nova_group')) and row.get('nova_group') != 0,
+        row.get('protein', 0) > 0,
+        row.get('fiber', 0) > 0,
+        row.get('sodium', 0) > 0,
+        row.get('sugars', 0) > 0,
+        row.get('fat', 0) > 0,
+    ]
+    score = sum(fields)
+    if score >= 6:
+        return "🟢 High", "conf-high", score / len(fields)
+    elif score >= 3:
+        return "🟡 Medium", "conf-medium", score / len(fields)
+    else:
+        return "🔴 Low", "conf-low", score / len(fields)
 
-# 3. LOCAL DATA FETCHING & VECTORIZED SCORING (DuckDB + Pandas)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPER: NUTRI-SCORE HTML BADGE
+# ──────────────────────────────────────────────────────────────────────────────
+def nutri_badge_html(grade):
+    """Return an HTML badge for the given Nutri-Score grade letter."""
+    g = str(grade).lower() if pd.notna(grade) else 'n'
+    if g not in ('a', 'b', 'c', 'd', 'e'):
+        g = 'n'
+    label = g.upper() if g != 'n' else '?'
+    return f'<span class="nutri-badge nutri-{g}">Nutri-Score {label}</span>'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# HELPER: NOVA GROUP LABEL
+# ──────────────────────────────────────────────────────────────────────────────
+NOVA_LABELS = {
+    1: "Unprocessed",
+    2: "Culinary ingredient",
+    3: "Processed",
+    4: "Ultra-processed",
+}
+
+def nova_badge_html(nova_group):
+    """Return an HTML badge showing the NOVA processing group."""
+    try:
+        n = int(nova_group)
+        label = NOVA_LABELS.get(n, f"NOVA {n}")
+    except (TypeError, ValueError):
+        return ""
+    return f'<span class="nova-badge">NOVA {n} · {label}</span>'
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# XAI FEATURE ATTRIBUTION
+# Computes the signed contribution of each factor to the Health Score.
+# This makes the scoring formula transparent and auditable.
+# ──────────────────────────────────────────────────────────────────────────────
+def compute_feature_contributions(row):
+    """
+    Decompose the Health Score into signed per-feature contributions.
+
+    Returns a list of (feature_label, contribution_value) tuples, sorted by
+    absolute contribution descending. Positive = helped the score, negative = hurt it.
+    """
+    grade_map = {'a': 40, 'b': 30, 'c': 20, 'd': 10, 'e': 5, 'n': 0}
+    g = str(row.get('nutriscore_grade', '')).lower()
+    health_base = grade_map.get(g, 0)
+
+    protein_contrib  = +min(row.get('protein', 0), 10) * 2
+    fiber_contrib    = +min(row.get('fiber', 0), 5) * 3
+    sugars_contrib   = -min(row.get('sugars', 0), 50) / 5
+    sat_fat_contrib  = -min(row.get('sat_fat', 0), 10) * 2
+    fat_contrib      = -min(row.get('fat', 0), 20) * 1
+    carbs_contrib    = -min(row.get('carbs', 0), 50) * 0.2
+    sodium_contrib   = -min(row.get('sodium', 0), 2000) / 20
+
+    contributions = [
+        ("Nutri-Score grade", health_base),
+        ("Protein", round(protein_contrib, 1)),
+        ("Fiber", round(fiber_contrib, 1)),
+        ("Sugars", round(sugars_contrib, 1)),
+        ("Saturated Fat", round(sat_fat_contrib, 1)),
+        ("Total Fat", round(fat_contrib, 1)),
+        ("Carbohydrates", round(carbs_contrib, 1)),
+        ("Sodium", round(sodium_contrib, 1)),
+    ]
+    return sorted(contributions, key=lambda x: abs(x[1]), reverse=True)
+
+
+def feature_attribution_chart(row):
+    """
+    Build a Plotly horizontal bar chart showing each feature's signed contribution
+    to the Health Score. Green bars = positive, red bars = negative.
+    """
+    contribs = compute_feature_contributions(row)
+    labels = [c[0] for c in contribs]
+    values = [c[1] for c in contribs]
+    colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in values]
+
+    fig = go.Figure(go.Bar(
+        x=values,
+        y=labels,
+        orientation="h",
+        marker_color=colors,
+        text=[f"{'+' if v >= 0 else ''}{v}" for v in values],
+        textposition="outside",
+    ))
+    fig.update_layout(
+        title="Feature Attribution — Health Score Breakdown",
+        xaxis_title="Score contribution (pts)",
+        yaxis=dict(autorange="reversed"),
+        height=320,
+        margin=dict(l=10, r=40, t=40, b=10),
+        xaxis=dict(zeroline=True, zerolinecolor="gray", zerolinewidth=1),
+    )
+    return fig
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# LOCAL DATA FETCHING & VECTORIZED SCORING (DuckDB + Pandas)
+# Dataset: Open Food Facts — https://world.openfoodfacts.org/data
 # ──────────────────────────────────────────────────────────────────────────────
 def fetch_and_score(query, hw, ew, file_path):
+    """
+    Query the Open Food Facts CSV via DuckDB, apply nutritional filters,
+    compute Health/Eco scores, and return ranked results.
+
+    Args:
+        query: product name search string
+        hw: health weight (0-100)
+        ew: eco weight (0-100)
+        file_path: path to the compressed CSV file
+
+    Returns:
+        (DataFrame, status_message)
+    """
     if not os.path.exists(file_path):
         return pd.DataFrame(), "❌ Data file not found. Check `CSV_PATH` variable."
-        
+
     try:
-        # Updated SQL to fetch new nutritional columns
         sql = f"""
         SELECT
             COALESCE(product_name, 'Unknown Product') AS product_name,
@@ -80,14 +301,14 @@ def fetch_and_score(query, hw, ew, file_path):
             'N/A' as packaging_recycling_code,
             origins,
             image_url,
-            COALESCE(proteins_100g, 0) AS protein,
-            COALESCE(fiber_100g, 0) AS fiber,
-            COALESCE(sodium_100g, 0) AS sodium,
-            COALESCE(sugars_100g, 0) AS sugars,
-            COALESCE(fat_100g, 0) AS fat,
-            COALESCE("saturated-fat_100g", 0) AS sat_fat,
-            COALESCE(carbohydrates_100g, 0) AS carbs,
-            COALESCE("energy-kcal_100g", 0) AS energy
+            COALESCE(proteins_100g, 0)          AS protein,
+            COALESCE(fiber_100g, 0)              AS fiber,
+            COALESCE(sodium_100g, 0)             AS sodium,
+            COALESCE(sugars_100g, 0)             AS sugars,
+            COALESCE(fat_100g, 0)                AS fat,
+            COALESCE("saturated-fat_100g", 0)    AS sat_fat,
+            COALESCE(carbohydrates_100g, 0)      AS carbs,
+            COALESCE("energy-kcal_100g", 0)      AS energy
         FROM read_csv_auto('{file_path}')
         WHERE product_name ILIKE '%{query}%'
         LIMIT 100
@@ -96,7 +317,7 @@ def fetch_and_score(query, hw, ew, file_path):
         if df.empty:
             return df, "⚠️ No matches found."
 
-        # Apply Nutritional Filters (Strict filtering)
+        # Apply strict nutritional filters from sidebar
         df = df[
             (df['protein'] >= min_protein) &
             (df['fiber'] >= min_fiber) &
@@ -111,50 +332,44 @@ def fetch_and_score(query, hw, ew, file_path):
         if df.empty:
             return df, "⚠️ No matches found after applying filters."
 
-        # ──────────────────────────────────────────────────────────────────
-        # UPDATED HEALTH SCORING LOGIC
-        # ──────────────────────────────────────────────────────────────────
+        # ── Health Scoring ──────────────────────────────────────────────────
+        # Nutri-Score grade provides a base; individual nutrients add/subtract points.
+        # Good nutrients: Protein (+2 pts/g, capped at 10g) and Fiber (+3 pts/g, capped at 5g)
+        # Bad nutrients: Sugars, Sat Fat, Total Fat, Carbs, Sodium all apply penalties.
         grade_map = {'a': 40, 'b': 30, 'c': 20, 'd': 10, 'e': 5, 'n': 0}
         df['health_base'] = df['nutriscore_grade'].map(grade_map).fillna(0)
-        
-        # Eco Scoring (Unchanged)
+
+        df['health'] = (
+            df['health_base']
+            + df['protein'].clip(upper=10).mul(2)
+            + df['fiber'].clip(upper=5).mul(3)
+            - df['sugars'].clip(upper=50).div(5)
+            - df['sat_fat'].clip(upper=10).mul(2)
+            - df['fat'].clip(upper=20).mul(1)
+            - df['carbs'].clip(upper=50).mul(0.2)
+            - df['sodium'].clip(upper=2000).div(20)
+        ).clip(lower=0, upper=100).round(1)
+
+        # ── Eco Scoring ─────────────────────────────────────────────────────
+        # Environmental grade base + packaging bonus + NOVA processing penalty
         df['eco_base'] = df['environmental_score_grade'].map(grade_map).fillna(0)
         df['packaging_score'] = df['packaging_recycling_code'].apply(
-            lambda x: 20 if x and 'recyclable' in str(x).lower() else (15 if x and 'compostable' in str(x).lower() else 0)
+            lambda x: 20 if x and 'recyclable' in str(x).lower()
+            else (15 if x and 'compostable' in str(x).lower() else 0)
         )
         df['nova_score'] = df['nova_group'].apply(
             lambda x: max(0, 20 - (x * 5)) if pd.notna(x) else 0
         )
-
-        # Health Formula: Good stuff (+) vs Bad stuff (-)
-        # Protein & Fiber are positive drivers
-        # Sugars, Sat Fat, Total Fat, Carbs, Sodium are negative drivers
-        df['health'] = (
-            df['health_base']
-            # Good nutrients
-            + df['protein'].clip(upper=10).mul(2)   # +2 pts per gram (capped)
-            + df['fiber'].clip(upper=5).mul(3)     # +3 pts per gram (capped)
-            # Bad nutrients (Penalties)
-            - df['sugars'].clip(upper=50).div(5)   # -0.2 pts per gram
-            - df['sat_fat'].clip(upper=10).mul(2)  # -2 pts per gram (heavier penalty)
-            - df['fat'].clip(upper=20).mul(1)      # -1 pt per gram
-            - df['carbs'].clip(upper=50).mul(0.2)  # -0.2 pts per gram
-            - df['sodium'].clip(upper=2000).div(20) # -0.05 pts per mg
-        ).clip(lower=0, upper=100).round(1)
-
-        # Eco Scoring
         df['eco'] = (df['eco_base'] + df['packaging_score'] + df['nova_score']).clip(lower=0, upper=100).round(1)
-        
-        # Weighted Score
+
+        # ── Weighted Score ──────────────────────────────────────────────────
         df['weighted'] = (df['health'] * hw + df['eco'] * ew) / 100
         df = df.sort_values('weighted', ascending=False).reset_index(drop=True)
-        
+
         return df, "✅ Loaded locally via DuckDB."
     except Exception as e:
         return pd.DataFrame(), f"❌ DuckDB Error: {e}"
 
-
-# ──────────────────────────────────────────────────────────────────────────────
 
 # ──────────────────────────────────────────────────────────────────────────────
 # OLLAMA CLOUD HELPERS
@@ -177,7 +392,12 @@ def ollama_chat(messages, system=None):
 
 
 def run_ollama_analysis(prod, df, health_weight, eco_weight):
-    """Send product context to Ollama and return the explanation string."""
+    """
+    Send product context to Ollama and return the XAI explanation string.
+
+    The prompt requests feature attribution, contrastive explanation,
+    personalised insight, and actionable tips — all key XAI requirements.
+    """
     best_health_name = df.loc[df['health'].idxmax(), 'product_name']
     best_eco_name    = df.loc[df['eco'].idxmax(), 'product_name']
 
@@ -228,9 +448,10 @@ Guidelines: Feature attribution, contrastive explanations, transparent & non-jud
     return ollama_chat(messages, system=system_instruction)
 
 
-# 4. MAIN UI
 # ──────────────────────────────────────────────────────────────────────────────
-if st.button("🔍 Query Local Database"):
+# MAIN UI — SEARCH BUTTON & RESULTS
+# ──────────────────────────────────────────────────────────────────────────────
+if st.button("🔍 Query Local Database", type="primary"):
     df, msg = fetch_and_score(search_query, health_weight, eco_weight, CSV_PATH)
     st.session_state["df"]  = df
     st.session_state["msg"] = msg
@@ -239,11 +460,25 @@ if st.button("🔍 Query Local Database"):
     st.session_state.pop("ollama_error", None)
     st.session_state.pop("chat_history", None)
 
-# Render results if we have them
+# ── Results ───────────────────────────────────────────────────────────────────
 if "df" in st.session_state and not st.session_state["df"].empty:
-    df  = st.session_state["df"]
+    df = st.session_state["df"]
     st.info(st.session_state.get("msg", ""))
-    st.success(f"Retrieved {len(df)} products from local compressed file.")
+
+    # ── Dashboard summary statistics ─────────────────────────────────────────
+    st.subheader("📊 Results Summary")
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Products found", len(df))
+    m2.metric("Avg Health Score", f"{df['health'].mean():.1f}/100")
+    m3.metric("Avg Eco Score", f"{df['eco'].mean():.1f}/100")
+    m4.metric("Best Health", f"{df['health'].max()}/100")
+    m5.metric("Best Eco", f"{df['eco'].max()}/100")
+
+    st.caption(
+        f"Search: **{search_query}** · Health priority: {health_weight}% · "
+        f"Eco priority: {eco_weight}% · Ranked by Weighted Score"
+    )
+    st.divider()
 
     NO_IMAGE_SVG = (
         "data:image/svg+xml;utf8,"
@@ -254,21 +489,32 @@ if "df" in st.session_state and not st.session_state["df"].empty:
         "</svg>"
     )
 
+    # ── Product cards — 3 per row ─────────────────────────────────────────────
     rows = [df.iloc[i:i+3] for i in range(0, len(df), 3)]
     for row_df in rows:
         cols = st.columns(3)
         for col_idx, (i, row) in enumerate(row_df.iterrows()):
             with cols[col_idx]:
+                conf_label, conf_cls, _ = compute_confidence(row)
+
+                # Product name + badges
                 st.markdown(f"### {row['product_name']}")
+                badge_html = nutri_badge_html(row.get('nutriscore_grade'))
+                nova_html = nova_badge_html(row.get('nova_group'))
+                conf_html = f'<span class="confidence-badge {conf_cls}">{conf_label} confidence</span>'
+                st.markdown(badge_html + nova_html + "<br>" + conf_html, unsafe_allow_html=True)
+
                 has_image = pd.notna(row.get('image_url')) and str(row.get('image_url', '')).strip()
                 st.image(row['image_url'] if has_image else NO_IMAGE_SVG, width=150)
-                st.metric("Health Score", f"{row['health']}/100")
-                st.metric("Eco Score",    f"{row['eco']}/100")
-                st.metric("Weighted",     f"{row['weighted']:.1f}")
 
-                if st.button(f"📖 Analyze", key=f"btn_{i}"):
-                    st.session_state["selected"]      = row.to_dict()
-                    st.session_state["chat_history"]  = []
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Health", f"{row['health']}")
+                c2.metric("Eco", f"{row['eco']}")
+                c3.metric("Score", f"{row['weighted']:.1f}")
+
+                if st.button("📖 Analyze", key=f"btn_{i}"):
+                    st.session_state["selected"]     = row.to_dict()
+                    st.session_state["chat_history"] = []
                     st.session_state.pop("ollama_analysis", None)
                     st.session_state.pop("ollama_error", None)
 
@@ -280,21 +526,35 @@ if "df" in st.session_state and not st.session_state["df"].empty:
                     else:
                         st.session_state["ollama_analysis"] = analysis
                         st.session_state["chat_history"].append({
-                            "role":    "assistant",
+                            "role": "assistant",
                             "content": analysis,
                         })
 
-    # ──────────────────────────────────────────────────────────────────────────
-    # 5. DEEP DIVE SECTION
-    # ──────────────────────────────────────────────────────────────────────────
+    # ── Deep Dive Section ─────────────────────────────────────────────────────
     if "selected" in st.session_state:
         prod = st.session_state["selected"]
         st.divider()
         st.subheader(f"📊 Deep Dive: {prod['product_name']}")
 
+        # ── XAI Feature Attribution bar chart (plain-language score breakdown) ──
+        st.markdown("#### 🔬 Why did this product get its Health Score?")
+        st.caption(
+            "Each bar shows how much a specific nutrient or grade helped (green) "
+            "or hurt (red) the Health Score. This makes the AI's reasoning transparent."
+        )
+        st.plotly_chart(feature_attribution_chart(prod), use_container_width=True)
+
+        # ── Confidence detail ──────────────────────────────────────────────────
+        conf_label, _, conf_pct = compute_confidence(prod)
+        st.markdown(
+            f"**Data Confidence:** {conf_label} — "
+            f"{int(conf_pct * 100)}% of key data fields are populated for this product."
+        )
+
+        # ── Multi-criteria radar chart ─────────────────────────────────────────
         nova_val = prod.get('nova_group') or 0
-        fig = go.Figure()
-        fig.add_trace(go.Scatterpolar(
+        fig_radar = go.Figure()
+        fig_radar.add_trace(go.Scatterpolar(
             r=[
                 prod['health'],
                 prod['eco'],
@@ -306,22 +566,47 @@ if "df" in st.session_state and not st.session_state["df"].empty:
             theta=["Health", "Eco-Footprint", "Low Processing", "Protein", "Low Sodium", "Packaging"],
             fill="toself",
             name=prod['product_name'],
+            line_color="#2ecc71",
         ))
-        fig.update_layout(
+        fig_radar.update_layout(
             polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
-            title="Product Profile (Multi-Criteria Radar)",
+            title="Product Profile — Multi-Criteria Radar (0 = worst, 100 = best)",
+            height=400,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig_radar, use_container_width=True)
 
+        # ── Alternative Engine ─────────────────────────────────────────────────
         st.subheader("🔄 Alternative Engine")
+        st.caption("Contrastive comparison: the best alternatives in your current search results.")
+        best_health_idx = df['health'].idxmax()
+        best_eco_idx    = df['eco'].idxmax()
+        best_health_row = df.loc[best_health_idx]
+        best_eco_row    = df.loc[best_eco_idx]
+
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown(f"**Better for Health:** {df.loc[df['health'].idxmax(), 'product_name']} (Score: {df['health'].max()})")
+            delta_h = round(best_health_row['health'] - prod['health'], 1)
+            st.markdown("**💚 Better for Health:**")
+            st.markdown(f"**{best_health_row['product_name']}**")
+            st.markdown(
+                f"Health: {best_health_row['health']}/100 "
+                f"{'(+'+str(delta_h)+' vs this product)' if delta_h > 0 else '(same)'}"
+            )
         with c2:
-            st.markdown(f"**Better for Earth:** {df.loc[df['eco'].idxmax(), 'product_name']} (Score: {df['eco'].max()})")
+            delta_e = round(best_eco_row['eco'] - prod['eco'], 1)
+            st.markdown("**🌍 Better for Earth:**")
+            st.markdown(f"**{best_eco_row['product_name']}**")
+            st.markdown(
+                f"Eco: {best_eco_row['eco']}/100 "
+                f"{'(+'+str(delta_e)+' vs this product)' if delta_e > 0 else '(same)'}"
+            )
 
-        # ── Ollama XAI Chat ──────────────────────────────────────────────────
-        st.subheader("🤖 Explainable AI (Ollama Chatbot)")
+        # ── Ollama XAI Chat ────────────────────────────────────────────────────
+        st.subheader("🤖 Explainable AI — Ask the Assistant")
+        st.caption(
+            "The AI assistant can explain scores, compare products, and suggest improvements. "
+            "It is grounded in the product data shown above and does not give medical advice."
+        )
 
         if "ollama_error" in st.session_state:
             st.error(st.session_state["ollama_error"])
@@ -350,3 +635,21 @@ if "df" in st.session_state and not st.session_state["df"].empty:
 
 elif "msg" in st.session_state:
     st.info(st.session_state["msg"])
+
+else:
+    # ── Welcome / onboarding state ─────────────────────────────────────────────
+    st.markdown("---")
+    st.markdown(
+        "### 👋 Welcome!\n"
+        "Use the **sidebar** to search for a food product and set your nutritional filters, "
+        "then click **🔍 Query Local Database** to get personalised recommendations with "
+        "transparent AI explanations.\n\n"
+        "Not sure where to start? Try searching for **Milk**, **Yogurt**, or **Bread**."
+    )
+    col_a, col_b, col_c = st.columns(3)
+    with col_a:
+        st.info("🔍 **Step 1** — Type a product name in the sidebar and click Query")
+    with col_b:
+        st.info("📊 **Step 2** — Browse ranked cards and click Analyze on any product")
+    with col_c:
+        st.info("🤖 **Step 3** — Chat with the AI to understand scores and alternatives")
