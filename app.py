@@ -91,6 +91,7 @@ with st.sidebar:
         "Product Name",
         "Milk",
         help="Type any food product name. The search is case-insensitive and matches partial names.",
+        on_change=lambda: st.session_state.update({"do_search": True})
     )
 
     st.divider()
@@ -134,14 +135,22 @@ with st.sidebar:
     st.divider()
     st.header("📊 Personalization Weights")
     st.caption("Adjust how much Health vs. Eco impacts the ranking.")
+    
+    
     health_weight = st.slider(
-        "Health Priority", 0, 100, 50, key="hw",
-        help="Higher = products are ranked more by their Health Score.",
+        "Health vs. Eco Priority", 
+        min_value=0, 
+        max_value=100, 
+        value=50, 
+        format="%d%% Health",
+        help="Drag left for more Eco focus, right for more Health focus."
     )
-    eco_weight = st.slider(
-        "Eco Priority", 0, 100, 50, key="ew",
-        help="Higher = products are ranked more by their Eco Score.",
-    )
+
+    eco_weight = 100 - health_weight
+
+    c1, c2 = st.columns(2)
+    c1.metric("Health Priority", f"{health_weight}%")
+    c2.metric("Eco Priority", f"{eco_weight}%")
 
     st.divider()
     st.caption("📖 [How It Works](/How_It_Works)  |  ❓ [Help & FAQ](/Help)")
@@ -451,7 +460,7 @@ Guidelines: Feature attribution, contrastive explanations, transparent & non-jud
 # ──────────────────────────────────────────────────────────────────────────────
 # MAIN UI — SEARCH BUTTON & RESULTS
 # ──────────────────────────────────────────────────────────────────────────────
-if st.button("🔍 Query Local Database", type="primary"):
+if st.button("🔍 Query Local Database", type="primary") or st.session_state.pop("do_search", False):
     df, msg = fetch_and_score(search_query, health_weight, eco_weight, CSV_PATH)
     st.session_state["df"]  = df
     st.session_state["msg"] = msg
@@ -498,15 +507,26 @@ if "df" in st.session_state and not st.session_state["df"].empty:
                 conf_label, conf_cls, _ = compute_confidence(row)
 
                 # Product name + badges
-                st.markdown(f"### {row['product_name']}")
+                st.markdown(
+                    f'<div style="height: 85px; overflow: hidden; margin-bottom: 10px;">'
+                    f'<h3 style="margin:0;">{row["product_name"]}</h3>'
+                    f'</div>', 
+                    unsafe_allow_html=True
+                )
                 badge_html = nutri_badge_html(row.get('nutriscore_grade'))
                 nova_html = nova_badge_html(row.get('nova_group'))
                 conf_html = f'<span class="confidence-badge {conf_cls}">{conf_label} confidence</span>'
                 st.markdown(badge_html + nova_html + "<br>" + conf_html, unsafe_allow_html=True)
 
                 has_image = pd.notna(row.get('image_url')) and str(row.get('image_url', '')).strip()
-                st.image(row['image_url'] if has_image else NO_IMAGE_SVG, width=150)
-
+                img_src = row['image_url'] if has_image else NO_IMAGE_SVG
+                
+                st.markdown(
+                    f'<div style="height: 180px; display: flex; align-items: center; justify-content: left; margin-top: 15px; margin-bottom: 15px;">'
+                    f'<img src="{img_src}" style="max-height: 160px; max-width: 150px; border-radius: 8px;">'
+                    f'</div>',
+                    unsafe_allow_html=True
+                )
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Health", f"{row['health']}")
                 c2.metric("Eco", f"{row['eco']}")
